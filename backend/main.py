@@ -45,22 +45,35 @@ async def run_ai_analysis(requirements_text: str, images: List[bytes] = None, cu
         
         # Use custom prompt if provided, otherwise use optimized default
         system_prompt = custom_prompt if custom_prompt else os.getenv("SYSTEM_PROMPT", """
-Analyze the requirements and generate JIRA tickets in JSON format.
+Analyze the requirements document and extract ALL EPICS, STORIES, and SUBTASKS into JSON format.
 
-Create 3-5 Epics, each with 2-4 Stories, each Story with 3-5 Subtasks.
+IMPORTANT INSTRUCTIONS:
+1. Extract ALL epics from the requirements (both FUNCTIONAL and NON-FUNCTIONAL categories)
+2. For each epic, extract ALL stories listed under it
+3. For each story, extract ALL subtasks listed under it
+4. Maintain the category information (functional vs non-functional)
+5. Preserve the priority levels mentioned in stories
+6. Keep the exact structure and hierarchy from the requirements
 
 Output Format:
 {
   "epics": [
     {
-      "summary": "Epic title (concise)",
-      "description": "Epic scope and value (1-2 sentences)",
+      "summary": "Epic title from requirements",
+      "description": "Epic description from requirements",
+      "category": "FUNCTIONAL" or "NON-FUNCTIONAL",
+      "epicNumber": "Epic number (e.g., 1, 2, 3...)",
       "stories": [
         {
-          "summary": "Story title",
-          "description": "Story details (1-2 sentences)",
+          "summary": "Story title from requirements",
+          "description": "Story description from requirements",
+          "priority": "Priority level if mentioned (High/Medium/Low)",
+          "storyNumber": "Story number within epic",
           "subtasks": [
-            {"summary": "Task description"}
+            {
+              "summary": "Subtask description from requirements",
+              "subtaskNumber": "Subtask number"
+            }
           ]
         }
       ]
@@ -68,7 +81,10 @@ Output Format:
   ]
 }
 
-Return ONLY valid JSON. Be concise but comprehensive.
+CRITICAL: Extract EVERY epic from the requirements document. Do not limit the number of epics.
+If the requirements have 17 epics, output all 17 epics with their complete hierarchy.
+
+Return ONLY valid JSON. No additional text or explanations.
 """)
         
         # Prepare content for AI
@@ -90,17 +106,50 @@ Return ONLY valid JSON. Be concise but comprehensive.
         
         print("--- AI response received ---")
         
-        # Clean up response
+        # Clean up response - robust JSON extraction
         text = response.text
-        cleaned_text = text.replace("```json", "").replace("```", "").strip()
+        
+        # Try multiple cleaning strategies
+        def extract_json(text_input):
+            # Strategy 1: Remove markdown code blocks
+            cleaned = text_input.replace("```json", "").replace("```", "").strip()
+            try:
+                return json.loads(cleaned)
+            except json.JSONDecodeError:
+                pass
+            
+            # Strategy 2: Find JSON between curly braces
+            start_idx = text_input.find('{')
+            end_idx = text_input.rfind('}')
+            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                json_text = text_input[start_idx:end_idx + 1]
+                try:
+                    return json.loads(json_text)
+                except json.JSONDecodeError:
+                    pass
+            
+            # Strategy 3: Try to find and parse largest JSON object
+            import re
+            json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+            matches = re.findall(json_pattern, text_input, re.DOTALL)
+            for match in reversed(matches):  # Try largest first
+                try:
+                    return json.loads(match)
+                except json.JSONDecodeError:
+                    continue
+            
+            return None
         
         # Parse JSON
-        try:
-            structured_data = json.loads(cleaned_text)
-            return structured_data
-        except json.JSONDecodeError as e:
-            print(f"Failed to parse AI response as JSON: {text}")
+        structured_data = extract_json(text)
+        
+        if structured_data is None:
+            print(f"Failed to parse AI response as JSON.")
+            print(f"Response preview (first 500 chars): {text[:500]}")
+            print(f"Response preview (last 500 chars): {text[-500:]}")
             raise HTTPException(status_code=500, detail="AI response was not valid JSON")
+        
+        return structured_data
             
     except Exception as e:
         print(f"Error in AI analysis: {str(e)}")
